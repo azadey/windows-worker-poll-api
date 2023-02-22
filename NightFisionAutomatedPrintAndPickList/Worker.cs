@@ -15,15 +15,9 @@ namespace NightFisionAutomatedPrintAndPickList
 
         private readonly ILogger<Worker> _logger;
         
-        private HttpClient _httpClient;
+        private UnleasheHttpClient _unleashedHttpClient;
 
-        private string _unleashedApiUrl;
-
-        private string _unleashedApiId;
-
-        private string _unleashedApiKey;
-
-        private string _unleasheApiArgs;
+        private UnleashedExceptionService _unleashedExceptionService;
 
 
         public Worker(ILogger<Worker> logger, IConfiguration configuration)
@@ -34,18 +28,14 @@ namespace NightFisionAutomatedPrintAndPickList
 
         public override Task StartAsync(CancellationToken cancellationToken)
         {
-            _httpClient = new HttpClient();
-            _unleashedApiUrl = _configuration.GetValue<string>("UnleashedApiUrl");
-            _unleashedApiId = _configuration.GetValue<string>("UnleashedApiId");
-            _unleashedApiKey = _configuration.GetValue<string>("UnleashedApiKey");
-            _unleasheApiArgs = _configuration.GetValue<string>("UnleashedApiArgs");
+            _unleashedHttpClient = new UnleasheHttpClient(_logger, _configuration, new HttpClient());
+            _unleashedExceptionService = new UnleashedExceptionService();
             
             return base.StartAsync(cancellationToken);
         }
 
         public override Task StopAsync(CancellationToken cancellationToken)
         {
-            _httpClient.Dispose();
             return base.StopAsync(cancellationToken);
         }
 
@@ -53,42 +43,19 @@ namespace NightFisionAutomatedPrintAndPickList
         {
             while (!stoppingToken.IsCancellationRequested)
             {
-                //_logger.LogInformation("Worker running at: {time}", DateTimeOffset.Now);
-                var content = new StringContent("{}", Encoding.UTF8, "application/json");
-                string signature = GetSignature(_unleasheApiArgs, _unleashedApiKey);
-                var _request = new HttpRequestMessage(HttpMethod.Get, _unleashedApiUrl) { Content = content };
-                _request.Headers.Add("Accept", "application/json");
-                _request.Headers.Add("api-auth-id", _unleashedApiId);
-                _request.Headers.Add("api-auth-signature", signature);
-                _request.Headers.Add("client-type", "API-Sandbox");
 
-                var result = await _httpClient.SendAsync(_request);
-                
-                if (result.IsSuccessStatusCode)
+                // Send request to Unleashed API
+                var assemblies = await _unleashedHttpClient.GetAssemblies();
+
+                if (assemblies?.Count > 0)
                 {
-                    var jsonContent = await result.Content.ReadAsStringAsync();
-                    _logger.LogInformation("The website is up. Status code {StatusCode}", result.StatusCode);
-                    _logger.LogInformation("The unleashed content {Content}", jsonContent);
-                } 
-                else
-                {
-                    _logger.LogError("The website is down. Status code {StatusCode}", result.StatusCode);
+                    // Send to printer node
+                    _logger.LogError("Send data to Print Node {@Assemblies}", assemblies);
                 }
 
-
-                await Task.Delay(5000, stoppingToken);
+                await Task.Delay(_configuration.GetValue<int>("UnleashedApiTiming"), stoppingToken);
             }
         }
 
-        private static string GetSignature(string args, string privatekey)
-        {
-            var encoding = new System.Text.UTF8Encoding();
-            byte[] key = encoding.GetBytes(privatekey);
-            var myhmacsha256 = new HMACSHA256(key);
-            byte[] hashValue = myhmacsha256.ComputeHash(encoding.GetBytes(args));
-            string hmac64 = Convert.ToBase64String(hashValue);
-            myhmacsha256.Clear();
-            return hmac64;
-        }
     }
 }
