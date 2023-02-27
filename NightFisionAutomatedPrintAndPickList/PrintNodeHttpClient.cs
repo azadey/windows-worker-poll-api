@@ -1,7 +1,5 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Security.Cryptography;
+﻿using Newtonsoft.Json;
+using System;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -16,36 +14,42 @@ namespace NightFisionAutomatedPrintAndPickList
 
         private readonly HttpClient _httpClient;
 
+        private IExceptionHandler _exceptionHandler;
+
         private string _printNodeApiUrl;
 
         private string _printNodeApiKey;
 
         private string _printNodePrinterId;
 
-        public PrintNodeHttpClient(ILogger<Worker> logger, IConfiguration configuration, HttpClient httpClient)
+        public PrintNodeHttpClient(ILogger<Worker> logger, IExceptionHandler exceptionHandler, IConfiguration configuration, HttpClient httpClient)
         {
             _configuration = configuration;
             _logger = logger;
             _httpClient = httpClient;
+            _exceptionHandler = exceptionHandler;
             _printNodeApiUrl = _configuration.GetValue<string>("PrintNodeApiUrl");
             _printNodeApiKey = _configuration.GetValue<string>("PrintNodeApiKey");
             _printNodePrinterId = _configuration.GetValue<string>("PrintNodePrinterId");
 
         }
 
-        public async Task<HttpResponseMessage> SendPrintJobAsync()
+        public async Task<HttpResponseMessage> SendPrintJobAsync(Assembly assembly, Product prodcut)
         {
-            var requestBody = new
-            {
-                printerId = 34,
-                title = "My Test PrintJob",
-                contentType = "pdf_uri",
-                content = "http://sometest.com/pdfhere",
-                source = "api documentation!",
-                expireAfter = 600
-            };
 
-            var requestBodyJson = JsonSerializer.Serialize(requestBody);
+            // build payload string for this assembly
+            string payload = "{" +
+                "\"printerId\": " + _printNodePrinterId +
+                ", \"title\": \"" + assembly.SalesOrderNumber +
+                "\", \"contentType\": \"" + Product.PdfUri +
+                "\", \"content\": \"" + prodcut.ImageUrl +
+                "\", \"source\": \"" + Assembly.AutomatedPrintService +
+                "\", \"copies\": " + assembly.Quantity + "}";
+
+            
+            var requestBodyJson = System.Text.Json.JsonSerializer.Serialize(payload);
+
+            _logger.LogInformation("The payload sent to Print node. {Payload}", requestBodyJson);
 
             // Create the HTTP request message
             var request = new HttpRequestMessage(HttpMethod.Post, _printNodeApiUrl);
@@ -62,25 +66,24 @@ namespace NightFisionAutomatedPrintAndPickList
 
                 if (result.IsSuccessStatusCode)
                 {
-                    //var assembliesJson = await result.Content.ReadAsStringAsync();
-                    _logger.LogInformation("The website is up. Status code {StatusCode}", result.StatusCode);
-                    //_logger.LogInformation("The unleashed content {Content}", assembliesJson);
-                    //return assembliesJson;
+                    _logger.LogInformation("[LABEL_PRINT_PRINT_NODE] successfully send to print node {StatusCode}", result.StatusCode);
                 }
                 else
                 {
-                    _logger.LogError("The website is down. Status code {StatusCode}", result.StatusCode);
+                    _logger.LogError("[LABEL_PRINT_PRINT_NODE] API returned status code {StausCode}", result.StatusCode);
+                    throw new HttpException($"Print node API returned a {result.StatusCode} status code.");
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError("Exception received to handle ::", ex);
+                _logger.LogError("[LABEL_PRINT_PRINT_NODE] Exception received ::", ex);
+                await _exceptionHandler.HandleExceptionAsync(ex, "label");
             }
 
             return null;
         }
 
-        public async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request)
+        private async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request)
         {
 
             return await _httpClient.SendAsync(request);

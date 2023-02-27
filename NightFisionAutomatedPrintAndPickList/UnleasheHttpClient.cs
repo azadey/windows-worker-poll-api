@@ -20,7 +20,13 @@ namespace NightFisionAutomatedPrintAndPickList
 
         private readonly HttpClient _httpClient;
 
-        private string _unleashedApiUrl;
+        private readonly IExceptionHandler _exceptionHandler;
+
+        private string _unleashedApiBaseUrl;
+
+        private string _unleashedApiAssemblyUrl;
+        
+        private string _unleashedApiProductUrl;    
 
         private string _unleashedApiId;
 
@@ -28,23 +34,28 @@ namespace NightFisionAutomatedPrintAndPickList
 
         private string _unleasheApiArgs;
 
-        public UnleasheHttpClient(ILogger<Worker> logger, IConfiguration configuration, HttpClient httpClient)
+        public UnleasheHttpClient(ILogger<Worker> logger, IExceptionHandler exceptionHandler, IConfiguration configuration, HttpClient httpClient)
         {
             _configuration = configuration;
             _logger = logger;
             _httpClient = httpClient;
-            _unleashedApiUrl = _configuration.GetValue<string>("UnleashedApiUrl");
+            _exceptionHandler = exceptionHandler;
+            _unleashedApiBaseUrl = _configuration.GetValue<string>("UnleashedApiBaseUrl");
+            _unleashedApiAssemblyUrl = _configuration.GetValue<string>("UnleashedApiAssemblyUrl");
+            _unleashedApiProductUrl = _configuration.GetValue<string>("UnleashedApiProductUrl");
             _unleashedApiId = _configuration.GetValue<string>("UnleashedApiId");
             _unleashedApiKey = _configuration.GetValue<string>("UnleashedApiKey");
             _unleasheApiArgs = _configuration.GetValue<string>("UnleashedApiArgs");
 
         }
 
-        public async Task<List<Item>?> GetAssemblies()
+        public async Task<List<Assembly>?> GetAssemblies(int labelInterval)
         {
+            _unleasheApiArgs += "&modifiedSince=" + DateTime.Now.AddSeconds(-1 * labelInterval);
             var content = new StringContent("{}", Encoding.UTF8, "application/json");
             string signature = GetSignature(_unleasheApiArgs, _unleashedApiKey);
-            var request = new HttpRequestMessage(HttpMethod.Get, _unleashedApiUrl + '?' + _unleasheApiArgs) { Content = content };
+
+            var request = new HttpRequestMessage(HttpMethod.Get, _unleashedApiBaseUrl + _unleashedApiAssemblyUrl + '?' + _unleasheApiArgs) { Content = content };
             request.Headers.Add("Accept", "application/json");
             request.Headers.Add("api-auth-id", _unleashedApiId);
             request.Headers.Add("api-auth-signature", signature);
@@ -57,20 +68,107 @@ namespace NightFisionAutomatedPrintAndPickList
                     if (result.IsSuccessStatusCode)
                     {
                         var assembliesJson = await result.Content.ReadAsStringAsync();
-                        _logger.LogInformation("The website is up. Status code {StatusCode}", result.StatusCode);
-                        var assemblies = JsonConvert.DeserializeObject<Assembly>(assembliesJson);
+                        var assemblies = JsonConvert.DeserializeObject<Response>(assembliesJson);
+
+                        _logger.LogInformation("[UNLEASHED_GET_ASSEMBLY] successfully retreived assemblies {StatusCode}", result.StatusCode);
+
                         return assemblies?.Items;
                     }
                     else
                     {
-                        _logger.LogError("The website is down. Status code {StatusCode}", result.StatusCode);
+                        _logger.LogError("[UNLEASHED_GET_ASSEMBLY] API returned status code {StausCode}", result.StatusCode);
+                        throw new HttpException($"Unleashed API returned a {result.StatusCode} status code.");
                     }
 
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError("Exception received to handle ::", ex);
+                _logger.LogError("[UNLEASHED_GET_ASSEMBLY] Exception received ::", ex);
+                await _exceptionHandler.HandleExceptionAsync(ex, "label");
+            }
+
+            return null;
+        }
+
+        public async Task<List<Assembly>?> GetPickNoteAssemblies(int pickNoteInterval)
+        {
+            string unleasheApiArgs = "&startDate=" + DateTime.Now.AddSeconds(-1 * pickNoteInterval);
+            var content = new StringContent("{}", Encoding.UTF8, "application/json");
+            string signature = GetSignature(_unleasheApiArgs, _unleashedApiKey);
+
+            var request = new HttpRequestMessage(HttpMethod.Get, _unleashedApiBaseUrl + _unleashedApiAssemblyUrl + '?' + _unleasheApiArgs) { Content = content };
+            request.Headers.Add("Accept", "application/json");
+            request.Headers.Add("api-auth-id", _unleashedApiId);
+            request.Headers.Add("api-auth-signature", signature);
+            request.Headers.Add("client-type", "API-Sandbox");
+
+            try
+            {
+                using (var result = await SendAsync(request))
+                {
+                    if (result.IsSuccessStatusCode)
+                    {
+                        var assembliesJson = await result.Content.ReadAsStringAsync();
+                        var assemblies = JsonConvert.DeserializeObject<Response>(assembliesJson);
+
+                        _logger.LogInformation("[UNLEASHED_GET_ASSEMBLY_PICKNOTE] successfully retreived assemblies {StatusCode}", result.StatusCode);
+
+                        return assemblies?.Items;
+                    }
+                    else
+                    {
+                        _logger.LogError("[UNLEASHED_GET_ASSEMBLY_PICKNOTE] API returned status code {StausCode}", result.StatusCode);
+                        throw new HttpException($"Unleashed API returned a {result.StatusCode} status code.");
+                    }
+
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("[UNLEASHED_GET_ASSEMBLY_PICKNOTE] Exception received ::", ex);
+                await _exceptionHandler.HandleExceptionAsync(ex, "label");
+            }
+
+            return null;
+        }
+
+        public async Task<Product?> GetProduct(string productId)
+        {
+            var content = new StringContent("{}", Encoding.UTF8, "application/json");
+            string signature = GetSignature("", _unleashedApiKey);
+
+            var request = new HttpRequestMessage(HttpMethod.Get, _unleashedApiBaseUrl + _unleashedApiProductUrl + '/' + productId) { Content = content };
+            request.Headers.Add("Accept", "application/json");
+            request.Headers.Add("api-auth-id", _unleashedApiId);
+            request.Headers.Add("api-auth-signature", signature);
+            request.Headers.Add("client-type", "API-Sandbox");
+
+            try
+            {
+                using (var result = await SendAsync(request))
+                {
+                    if (result.IsSuccessStatusCode)
+                    {
+                        var productJson = await result.Content.ReadAsStringAsync();
+                        var product = JsonConvert.DeserializeObject<Product>(productJson);
+
+                        _logger.LogInformation("[UNLEASHED_GET_PRODUCT] successfully retreived product {StatusCode}", result.StatusCode);
+
+                        return product;
+                    }
+                    else
+                    {
+                        _logger.LogError("[UNLEASHED_GET_PRODUCT] API returned status code {StausCode}", result.StatusCode);
+                        throw new HttpException($"Unleashed API returned a {result.StatusCode} status code.");
+                    }
+
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("[UNLEASHED_GET_PRODUCT] Exception received ::", ex);
+                await _exceptionHandler.HandleExceptionAsync(ex, "label");
             }
 
             return null;
