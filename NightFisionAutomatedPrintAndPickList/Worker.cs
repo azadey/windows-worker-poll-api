@@ -1,29 +1,30 @@
+using iTextSharp.text.pdf.qrcode;
 using Microsoft.AspNetCore.DataProtection.KeyManagement;
 using Microsoft.Extensions.Hosting;
+using NightFisionAutomatedPrintAndPickList.Services;
+using NightFisionAutomatedPrintAndPickList.Services.Interfaces;
 using Serilog;
 using Serilog.Events;
 using Serilog.Sinks.File;
+using System.IO.Compression;
+using System.IO;
+using System;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Security.Cryptography.Xml;
 using System.Text;
+using System.Threading.Tasks;
+using System.Xml;
 
 namespace NightFisionAutomatedPrintAndPickList
 {
     public class Worker : BackgroundService
     {
-        private readonly IConfiguration _configuration;
+        private readonly ConfigManager _configuration;
 
         private readonly ILogger<Worker> _logger;
 
-        private readonly IEmailService _emailService;
-
         private readonly GeneratePdfService _generatePdfService;
-
-        private readonly int _labelInterval;
-
-        private readonly int _pickNoteInterval;
-
-        private readonly int _logEmailInterval;
 
         private UnleasheHttpClient _unleashedHttpClient;
 
@@ -31,27 +32,23 @@ namespace NightFisionAutomatedPrintAndPickList
 
         private SendErrorLogEmail _sendErrorLogEmail;
 
-        private IExceptionHandler _exceptionHandler;
+        private ExceptionHandler _exceptionHandler;
 
 
-        public Worker(ILogger<Worker> logger, IConfiguration configuration)
+        public Worker(ILogger<Worker> logger)
         {
-            _configuration = configuration;
+            _configuration = new ConfigManager(_logger, "Config.xml");
             _logger = logger;
-            _emailService = new SmtpEmailService(_configuration);
             _generatePdfService = new GeneratePdfService();
-            _labelInterval = _configuration.GetValue<int>("UnleashedApiLabelInterval");
-            _pickNoteInterval = _configuration.GetValue<int>("UnleashedApiPickNoteInterval");
-            _logEmailInterval = _configuration.GetValue<int>("EmailServiceInterval");
+            _exceptionHandler = new ExceptionHandler();
+            _unleashedHttpClient = new UnleasheHttpClient(_logger, _exceptionHandler, _configuration, new HttpClient());
+            _printNodeHttpClient = new PrintNodeHttpClient(_logger, _exceptionHandler, _configuration, new HttpClient());
+            var _emailService = new SmtpEmailService(_configuration);
+            _sendErrorLogEmail = new SendErrorLogEmail(_logger, _emailService, _configuration);
         }
 
         public override Task StartAsync(CancellationToken cancellationToken)
         {
-            _unleashedHttpClient = new UnleasheHttpClient(_logger, _exceptionHandler, _configuration, new HttpClient());
-            _printNodeHttpClient = new PrintNodeHttpClient(_logger, _exceptionHandler, _configuration, new HttpClient());
-            _sendErrorLogEmail = new SendErrorLogEmail(_logger, _configuration, _emailService);
-            _exceptionHandler = new IExceptionHandler();
-
             return base.StartAsync(cancellationToken);
         }
 
@@ -62,66 +59,72 @@ namespace NightFisionAutomatedPrintAndPickList
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
+            List<Timer> runningTasks = new List<Timer>();
+
             while (!stoppingToken.IsCancellationRequested)
             {
+                XmlNodeList taskNodes = _configuration.GetTasks();
 
-                var labelTime = new Timer(async _ =>
+                foreach (XmlNode taskNode in taskNodes)
                 {
-                    try
-                    {
-                        await runLabelPrintTask(stoppingToken);
+                    
+                    string enabled = taskNode.SelectSingleNode("Enabled").InnerText;
 
-                    }
-                    catch (Exception ex)
+                    if (bool.Parse(enabled))
                     {
-                        await _exceptionHandler.HandleExceptionAsync(ex, "label");
-                    }
+                        string interval = taskNode.SelectSingleNode("FrequencyDuration").InnerText;
+                        string taskAction = taskNode.SelectSingleNode("TaskAction").InnerText;
+                        string taskName = taskNode.SelectSingleNode("TaskName").InnerText;
+                        string logError = taskNode.SelectSingleNode("LogError").InnerText;
 
-                }, null, 0, _labelInterval);
-                
-                
-                var pickNoteTime = new Timer(async _ =>
-                {
-                    try
-                    {
-                        await runPickNoteTask(stoppingToken);
-                    }
-                    catch (Exception ex)
-                    {
-                        await _exceptionHandler.HandleExceptionAsync(ex, "picknote");
-                    }
+                        MethodInfo taskMethod = GetType().GetMethod(taskAction);
+                        
 
+                        var runningTask = new Timer(async _ =>
+                        {
+                            try
+                            {
+                                await (Task)taskMethod.Invoke(this, new object[] { stoppingToken });
 
-                }, null, 0, _pickNoteInterval);
+                            }
+                            catch (Exception ex)
+                            {
+                                if (bool.Parse(logError))
+                                {
+                                    await _exceptionHandler.HandleExceptionAsync(ex, taskName);
+                                } 
+                                else
+                                {
+                                    _logger.LogError("["+ taskName + "] Exception received ::", ex);
+                                }
+                            }
 
-                var logEmailTime = new Timer(async _ =>
-                {
-                    try
-                    {
-                        await runLogEmailTask(stoppingToken);
+                        }, null, 0, int.Parse(interval));
+
+                        runningTasks.Add(runningTask);
                     }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError("[EMAIL_SERVICE] Exception received ::", ex);
-                    }
-
-                }, null, 0, _logEmailInterval);
+                }
 
                 await Task.Delay(Timeout.Infinite, stoppingToken);
 
-                labelTime.Dispose();
-                pickNoteTime.Dispose();
-
-                _logger.LogInformation("Unleashed workers stopped.");
+                foreach (var task in runningTasks)
+                {
+                    task.Dispose();
+                }
             }
         }
-
-        private async Task runLabelPrintTask(CancellationToken stoppingToken)
+        
+        public async Task runLabelPrintTask(CancellationToken stoppingToken)
         {
             try
             {
+                DateTime now = DateTime.Now;
                 // Send request to Unleashed API
-                var assemblies = await _unleashedHttpClient.GetAssemblies(_labelInterval);
+                var assemblies = await _unleashedHttpClient.GetAssemblies();
+
+                // Update the lastTimeRetrieved
+                string dateNow = now.ToString("yyyy-MM-dd'T'HH:mm:ss.fff");
+                _configuration.SetTimeRetrieved("UnleashedPrintLabel", dateNow);
 
                 if (assemblies?.Count > 0)
                 {
@@ -143,25 +146,35 @@ namespace NightFisionAutomatedPrintAndPickList
             }
             catch (Exception ex)
             {
-                _logger.LogError("[LABEL_PRINT] Exception received ::", ex);
                 await _exceptionHandler.HandleExceptionAsync(ex, "label");
             }
         }
 
-        private async Task runPickNoteTask(CancellationToken stoppingToken)
+        public async Task runPickNoteTask(CancellationToken stoppingToken)
         {
             try
             {
+                DateTime now = DateTime.Now;
                 // Send request to Unleashed API
-                var assemblies = await _unleashedHttpClient.GetPickNoteAssemblies(_pickNoteInterval);
+                var assemblies = await _unleashedHttpClient.GetPickNoteAssemblies();
+
+                // Update the lastTimeRetrieved
+                string dateNow = now.ToString("yyyy-MM-dd'T'HH:mm:ss.fff");
+                _configuration.SetTimeRetrieved("UnleashedPickNote", dateNow);
 
                 if (assemblies?.Count > 0)
                 {
+                    _logger.LogInformation("[PICK_NOTE] response assemblies", assemblies);
                     foreach (var assembly in assemblies)
                     {
-                        if (assembly.SalesOrderNumber?.Length > 0)
+                        if (assembly.SalesOrderNumber?.Length > 0 && assembly.Product?.Guid?.Length > 0)
                         {
-                            _generatePdfService.GeneratePdf("path");
+                            var stockOnHand = await _unleashedHttpClient.GetStockOnHand(assembly.Product.Guid);
+
+                            if (stockOnHand != null && stockOnHand.ProductGuid?.Length > 0)
+                            {
+                                _generatePdfService.GeneratePdf(assembly, stockOnHand);
+                            }
                         }
                     }
                 }
@@ -173,11 +186,12 @@ namespace NightFisionAutomatedPrintAndPickList
             }
         }
 
-        private async Task runLogEmailTask(CancellationToken stoppingToken)
+        public async Task runLogEmailTask(CancellationToken stoppingToken)
         {
             try
             {
-                await _sendErrorLogEmail.SendLogEmailAsync(stoppingToken, _logEmailInterval);
+                
+                await _sendErrorLogEmail.SendLogEmailAsync(stoppingToken);
             }
             catch (Exception ex)
             {
@@ -185,5 +199,21 @@ namespace NightFisionAutomatedPrintAndPickList
             }
         }
 
+        public async Task runRotateLogs(CancellationToken stoppingToken)
+        {
+            var logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Logs");
+            if (!Directory.Exists(logPath))
+            {
+                Directory.CreateDirectory(logPath);
+            }
+
+            string _logFilePath = Path.Combine(logPath, $"main_exceptions_{DateTime.Now.AddDays(-1):yyyyMMdd}.log");
+
+           
+            if (File.Exists(_logFilePath))
+            {
+                File.Delete(_logFilePath);
+            }
+        }
     }
 }

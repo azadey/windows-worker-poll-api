@@ -3,13 +3,17 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Mail;
+using System.Runtime.Intrinsics.X86;
 using System.Text;
 using System.Threading.Tasks;
+using NightFisionAutomatedPrintAndPickList.Services.Interfaces;
 
-namespace NightFisionAutomatedPrintAndPickList
+namespace NightFisionAutomatedPrintAndPickList.Services
 {
     internal class SmtpEmailService : IEmailService
     {
+        private readonly ConfigManager _configuration;
+
         private readonly string _smtpServer;
 
         private readonly int _smtpPort;
@@ -20,13 +24,14 @@ namespace NightFisionAutomatedPrintAndPickList
 
         private readonly string _fromEmailAddress;
 
-        public SmtpEmailService(IConfiguration configuration)
+        public SmtpEmailService(ConfigManager configuration)
         {
-            _smtpServer = configuration.GetValue<string>("SmtpServer");
-            _smtpPort = configuration.GetValue<int>("SmtpPort");
-            _smtpUsername = configuration.GetValue<string>("SmtpUsername");
-            _smtpPassword = configuration.GetValue<string>("SmtpPassword");
-            _fromEmailAddress = configuration.GetValue<string>("FromEmailAddress");
+            _configuration = configuration;
+            _smtpServer = configuration.GetEmailSettings("Default", "Host");
+            _smtpPort = int.Parse(configuration.GetEmailSettings("Default", "Port"));
+            _smtpUsername = configuration.GetEmailSettings("Default", "Username");
+            _smtpPassword = configuration.GetEmailSettings("Default", "Password"); ;
+            _fromEmailAddress = configuration.GetEmailSettings("Default", "FromEmail"); ;
         }
 
         public async Task<bool> SendEmailWithAttachmentAsync(string toEmailAddress, string subject, string messageBody, List<string> attachments = null)

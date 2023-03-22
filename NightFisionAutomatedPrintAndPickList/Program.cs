@@ -6,12 +6,22 @@ public static class Program
 {
     public static async Task Main(string[] args)
     {
+        
+        var logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Logs");
+        if (!Directory.Exists(logPath))
+        {
+            Directory.CreateDirectory(logPath);
+        }
+
+        string _logFilePath = Path.Combine(logPath, $"main_exceptions_{DateTime.Now:yyyyMMdd}.log");
+
+
         // Configure Serilog logging
         Log.Logger = new LoggerConfiguration()
             .MinimumLevel.Debug()
             .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
             .Enrich.FromLogContext()
-            .WriteTo.File(@"C:\temp\workerservice\LogFile.txt")
+            .WriteTo.File(_logFilePath)
             .CreateLogger();
 
         try

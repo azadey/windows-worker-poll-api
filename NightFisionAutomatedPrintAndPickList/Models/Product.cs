@@ -5,6 +5,8 @@
 
     public const string PdfRawUri = "raw_uri";
 
+    public const string RawBase64 = "raw_base64";
+
     public string? Guid { get; set; }
 
     public string? ProductCode { get; set; }

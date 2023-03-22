@@ -2,6 +2,7 @@
 using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Json;
@@ -10,23 +11,25 @@ using System.Text;
 using System.Text.Json.Serialization;
 using System.Threading.Tasks;
 
-namespace NightFisionAutomatedPrintAndPickList
+namespace NightFisionAutomatedPrintAndPickList.Services
 {
     internal class UnleasheHttpClient
     {
-        private readonly IConfiguration _configuration;
+        private readonly ConfigManager _configuration;
 
         private readonly ILogger<Worker> _logger;
 
         private readonly HttpClient _httpClient;
 
-        private readonly IExceptionHandler _exceptionHandler;
+        private readonly ExceptionHandler _exceptionHandler;
 
         private string _unleashedApiBaseUrl;
 
         private string _unleashedApiAssemblyUrl;
-        
-        private string _unleashedApiProductUrl;    
+
+        private string _unleashedApiProductUrl;
+
+        private string _unleashedApiStockOnHandUrl;
 
         private string _unleashedApiId;
 
@@ -34,24 +37,26 @@ namespace NightFisionAutomatedPrintAndPickList
 
         private string _unleasheApiArgs;
 
-        public UnleasheHttpClient(ILogger<Worker> logger, IExceptionHandler exceptionHandler, IConfiguration configuration, HttpClient httpClient)
+        public UnleasheHttpClient(ILogger<Worker> logger, ExceptionHandler exceptionHandler, ConfigManager configuration, HttpClient httpClient)
         {
             _configuration = configuration;
             _logger = logger;
             _httpClient = httpClient;
             _exceptionHandler = exceptionHandler;
-            _unleashedApiBaseUrl = _configuration.GetValue<string>("UnleashedApiBaseUrl");
-            _unleashedApiAssemblyUrl = _configuration.GetValue<string>("UnleashedApiAssemblyUrl");
-            _unleashedApiProductUrl = _configuration.GetValue<string>("UnleashedApiProductUrl");
-            _unleashedApiId = _configuration.GetValue<string>("UnleashedApiId");
-            _unleashedApiKey = _configuration.GetValue<string>("UnleashedApiKey");
-            _unleasheApiArgs = _configuration.GetValue<string>("UnleashedApiArgs");
 
+            _unleashedApiBaseUrl = _configuration.GetClientSettings("Unleashed", "BaseUrl");
+            _unleashedApiId = _configuration.GetClientSettings("Unleashed", "ApiID");
+            _unleashedApiKey = _configuration.GetClientSettings("Unleashed", "ApiKey");
+            _unleasheApiArgs = _configuration.GetClientSettings("Unleashed", "Args");
+            _unleashedApiAssemblyUrl = _configuration.GetClientSettings("Unleashed", "AssemblyPath");
+            _unleashedApiProductUrl = _configuration.GetClientSettings("Unleashed", "ProductPath");
+            _unleashedApiStockOnHandUrl = _configuration.GetClientSettings("Unleashed", "StockOnHandPath");
         }
 
-        public async Task<List<Assembly>?> GetAssemblies(int labelInterval)
+        public async Task<List<Assembly>?> GetAssemblies()
         {
-            _unleasheApiArgs += "&modifiedSince=" + DateTime.Now.AddSeconds(-1 * labelInterval);
+            string lastTimeRetrieved = _configuration.GetTaskSettings("UnleashedPrintLabel", "LastOfficialTimeRetrieved");
+            _unleasheApiArgs += "&modifiedSince=" + lastTimeRetrieved;
             var content = new StringContent("{}", Encoding.UTF8, "application/json");
             string signature = GetSignature(_unleasheApiArgs, _unleashedApiKey);
 
@@ -77,7 +82,7 @@ namespace NightFisionAutomatedPrintAndPickList
                     else
                     {
                         _logger.LogError("[UNLEASHED_GET_ASSEMBLY] API returned status code {StausCode}", result.StatusCode);
-                        throw new HttpException($"Unleashed API returned a {result.StatusCode} status code.");
+                        throw new HttpRequestException($"Unleashed API returned a {result.StatusCode} status code.");
                     }
 
                 }
@@ -91,9 +96,10 @@ namespace NightFisionAutomatedPrintAndPickList
             return null;
         }
 
-        public async Task<List<Assembly>?> GetPickNoteAssemblies(int pickNoteInterval)
+        public async Task<List<Assembly>?> GetPickNoteAssemblies()
         {
-            string unleasheApiArgs = "&startDate=" + DateTime.Now.AddSeconds(-1 * pickNoteInterval);
+            string lastTimeRetrieved = _configuration.GetTaskSettings("UnleashedPickNote", "LastOfficialTimeRetrieved");
+            string unleasheApiArgs = "&startDate=" + lastTimeRetrieved;
             var content = new StringContent("{}", Encoding.UTF8, "application/json");
             string signature = GetSignature(_unleasheApiArgs, _unleashedApiKey);
 
@@ -119,7 +125,7 @@ namespace NightFisionAutomatedPrintAndPickList
                     else
                     {
                         _logger.LogError("[UNLEASHED_GET_ASSEMBLY_PICKNOTE] API returned status code {StausCode}", result.StatusCode);
-                        throw new HttpException($"Unleashed API returned a {result.StatusCode} status code.");
+                        throw new HttpRequestException($"Unleashed API returned a {result.StatusCode} status code.");
                     }
 
                 }
@@ -160,7 +166,7 @@ namespace NightFisionAutomatedPrintAndPickList
                     else
                     {
                         _logger.LogError("[UNLEASHED_GET_PRODUCT] API returned status code {StausCode}", result.StatusCode);
-                        throw new HttpException($"Unleashed API returned a {result.StatusCode} status code.");
+                        throw new HttpRequestException($"Unleashed API returned a {result.StatusCode} status code.");
                     }
 
                 }
@@ -169,6 +175,47 @@ namespace NightFisionAutomatedPrintAndPickList
             {
                 _logger.LogError("[UNLEASHED_GET_PRODUCT] Exception received ::", ex);
                 await _exceptionHandler.HandleExceptionAsync(ex, "label");
+            }
+
+            return null;
+        }
+
+        public async Task<StockOnHand?> GetStockOnHand(string productId)
+        {
+            var content = new StringContent("{}", Encoding.UTF8, "application/json");
+            string signature = GetSignature("", _unleashedApiKey);
+
+            var request = new HttpRequestMessage(HttpMethod.Get, _unleashedApiBaseUrl + _unleashedApiStockOnHandUrl + '/' + productId) { Content = content };
+            request.Headers.Add("Accept", "application/json");
+            request.Headers.Add("api-auth-id", _unleashedApiId);
+            request.Headers.Add("api-auth-signature", signature);
+            request.Headers.Add("client-type", "API-Sandbox");
+
+            try
+            {
+                using (var result = await SendAsync(request))
+                {
+                    if (result.IsSuccessStatusCode)
+                    {
+                        var productJson = await result.Content.ReadAsStringAsync();
+                        var stockOnHand = JsonConvert.DeserializeObject<StockOnHand>(productJson);
+
+                        _logger.LogInformation("[UNLEASHED_GET_STOCK_ON_HAND] successfully retrieved stock {StatusCode}", result.StatusCode);
+
+                        return stockOnHand;
+                    }
+                    else
+                    {
+                        _logger.LogError("[UNLEASHED_GET_STOCK_ON_HAND] API returned status code {StausCode}", result.StatusCode);
+                        throw new HttpRequestException($"Unleashed API returned a {result.StatusCode} status code.");
+                    }
+
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("[UNLEASHED_GET_STOCK_ON_HAND] Exception received ::", ex);
+                await _exceptionHandler.HandleExceptionAsync(ex, "picknote");
             }
 
             return null;
@@ -188,7 +235,7 @@ namespace NightFisionAutomatedPrintAndPickList
 
         private static string GetSignature(string args, string privatekey)
         {
-            var encoding = new System.Text.UTF8Encoding();
+            var encoding = new UTF8Encoding();
             byte[] key = encoding.GetBytes(privatekey);
             var myhmacsha256 = new HMACSHA256(key);
             byte[] hashValue = myhmacsha256.ComputeHash(encoding.GetBytes(args));

@@ -1,4 +1,6 @@
-﻿using System;
+﻿using Microsoft.Extensions.Configuration;
+using NightFisionAutomatedPrintAndPickList.Services.Interfaces;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Mail;
@@ -7,39 +9,41 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace NightFisionAutomatedPrintAndPickList
+namespace NightFisionAutomatedPrintAndPickList.Services
 {
     internal class SendErrorLogEmail
     {
         private readonly ILogger<Worker> _logger;
-        private readonly IConfiguration _configuration;
         private readonly IEmailService _emailService;
-        private readonly string _recipient;
+        readonly ConfigManager _configuration;
 
-        private TimeOnly _timer;
-        private bool _disposed = false;
 
-        public SendErrorLogEmail(ILogger<Worker> logger, IConfiguration configuration, IEmailService emailService)
+        public SendErrorLogEmail(ILogger<Worker> logger, IEmailService emailService, ConfigManager configuration)
         {
             _logger = logger;
-            _configuration = configuration;
             _emailService = emailService;
-
-            _recipient = _configuration.GetValue<string>("ErrorLogRecipient");
+            _configuration = configuration;
         }
 
-        public async Task SendLogEmailAsync(CancellationToken stoppingToken, int emailServiceInterval)
+        public async Task SendLogEmailAsync(CancellationToken stoppingToken)
         {
             try
             {
                 var labelTask = "label";
                 var pickNoteTask = "picknote";
+
+                string lastTimeRetrieved = _configuration.GetTaskSettings("UnleashedPickNote", "LastOfficialTimeRetrieved");
+                string recipient = _configuration.GetTaskSettings("SendErrorLogEmail", "Recipient");
+                // Set now as the lastTimeRetrieved
+                DateTime now = DateTime.Now;
+                string dateNow = now.ToString("yyyy-MM-dd'T'HH:mm:ss.fff");
+                _configuration.SetTimeRetrieved("SendErrorLogEmail", dateNow);
+
                 var logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Logs");
+                var labelLogPath = Path.Combine(logPath, $"{labelTask}_exceptions_{lastTimeRetrieved}.log");
+                var labelPathProcessing = Path.Combine(logPath, $"{labelTask}_exceptions_processing_{dateNow}.log");
 
-
-                var labelLogPath = Path.Combine(logPath, $"{labelTask}_exceptions_{DateTime.Now.AddSeconds(-1 * emailServiceInterval):yyyyMMdd}.log");
-                var labelPathProcessing = Path.Combine(logPath, $"{labelTask}_exceptions_processing_{DateTime.Now:yyyyMMdd}.log");
-                if (File.Exists(labelPathProcessing))
+                if (!File.Exists(labelPathProcessing))
                 {
                     _logger.LogWarning("[EMAIL_SERVICE] not able to mv label log file to new path", labelPathProcessing);
                 }
@@ -48,10 +52,10 @@ namespace NightFisionAutomatedPrintAndPickList
                     File.Move(labelLogPath, labelPathProcessing);
                 }
 
-                
-                var pickNoteLogPath = Path.Combine(logPath, $"{pickNoteTask}_exceptions_{DateTime.Now.AddSeconds(-1 * emailServiceInterval):yyyyMMdd}.log");
-                var pickNotePathProcessing = Path.Combine(logPath, $"{pickNoteTask}_exceptions_processing_{DateTime.Now.AddSeconds(-1 * emailServiceInterval):yyyyMMdd}.log");
-                if (File.Exists(pickNotePathProcessing))
+
+                var pickNoteLogPath = Path.Combine(logPath, $"{pickNoteTask}_exceptions_{lastTimeRetrieved}.log");
+                var pickNotePathProcessing = Path.Combine(logPath, $"{pickNoteTask}_exceptions_processing_{dateNow}.log");
+                if (!File.Exists(pickNotePathProcessing))
                 {
                     _logger.LogWarning("[EMAIL_SERVICE] not able to mv picknote log file to new path", pickNotePathProcessing);
                 }
@@ -63,8 +67,8 @@ namespace NightFisionAutomatedPrintAndPickList
                 // Check if log file exists
                 if (!File.Exists(labelPathProcessing) && !File.Exists(pickNotePathProcessing))
                 {
-                    _logger.LogWarning("[EMAIL_SERVICE] Log file label {LogFilePath} not found", labelPathProcessing);
-                    _logger.LogWarning("[EMAIL_SERVICE] Log file picknote {LogFilePath} not found", pickNotePathProcessing);
+                    _logger.LogInformation("[EMAIL_SERVICE] Log file label {LogFilePath} not found", labelPathProcessing);
+                    _logger.LogInformation("[EMAIL_SERVICE] Log file picknote {LogFilePath} not found", pickNotePathProcessing);
                     return;
                 }
 
@@ -75,13 +79,13 @@ namespace NightFisionAutomatedPrintAndPickList
                 if (string.IsNullOrEmpty(labelContent) && string.IsNullOrEmpty(pickNoteContent))
                 {
                     // No need to send email if logs are empty
-                    _logger.LogWarning("[EMAIL_SERVICE] Log file content not found ending worker");
+                    _logger.LogInformation("[EMAIL_SERVICE] Log file content not found ending worker");
                     return;
                 }
 
                 // Generate email subject and body
-                var subject = $"Log file for {DateTime.Now.AddDays(-1 * emailServiceInterval):yyyy-MM-dd}";
-                var body = $"Attached is the log file for {DateTime.Now.AddDays(-1 * emailServiceInterval):yyyy-MM-dd}.";
+                var subject = $"Log file for {lastTimeRetrieved}";
+                var body = $"Attached is the log file for {lastTimeRetrieved}.";
                 List<string> attachments = new List<string>();
                 if (!string.IsNullOrEmpty(labelContent))
                 {
@@ -93,15 +97,15 @@ namespace NightFisionAutomatedPrintAndPickList
                 }
 
                 // Send email with log file as attachment
-                var emailSent = await _emailService.SendEmailWithAttachmentAsync(
-                    _recipient,
+                var emailSent = true; /*await _emailService.SendEmailWithAttachmentAsync(
+                    recipient,
                     subject,
                     body,
-                    attachments);
+                    attachments);*/
 
                 if (emailSent)
                 {
-                    _logger.LogInformation("[EMAIL_SERVICE] Log email sent successfully to {LogEmailRecipient}.", _recipient);
+                    _logger.LogInformation("[EMAIL_SERVICE] Log email sent successfully to {LogEmailRecipient}.", recipient);
 
                     // Delete log file
                     File.Delete(labelPathProcessing);
@@ -113,13 +117,13 @@ namespace NightFisionAutomatedPrintAndPickList
                 }
                 else
                 {
-                    _logger.LogError("[EMAIL_SERVICE] Failed to send log email to {LogEmailRecipient}.", _recipient);
+                    _logger.LogError("[EMAIL_SERVICE] Failed to send log email to {LogEmailRecipient}.", recipient);
                 }
 
             }
             catch (Exception ex)
             {
-                _logger.LogError("[EMAIL_SERVICE] Exception received ::", ex);
+                _logger.LogError("[EMAIL_SERVICE] Exception received ::" + ex.Message);
             }
         }
     }
